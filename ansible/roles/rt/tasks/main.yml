@@ -1,0 +1,174 @@
+---
+- name: Extract source for RT
+  unarchive: dest=/tmp src=rt-4.2.6.tar.gz copy=yes creates=/opt/rt4
+
+
+- name: Configure RT
+  command: /tmp/rt-4.2.6/configure --with-db-rt-user=rt4 --with-db-rt-pass=pas --with-db-database=rt4 --with-db-host=localhost --with-web-user=nginx-data --with-web-group=nginx-data
+  args:
+    chdir: /tmp/rt-4.2.6
+    creates: /opt/rt4
+
+- name: Install RT dependencies through yum
+  yum: name={{ item }} state=present
+  with_items:
+    - perl-CPAN
+    - openssl
+    - openssl-devel
+    - perl(Text::ParseWords)
+    - perl(Term::ReadKey)
+    - perl(Getopt::Long)
+    - perl(HTTP::Request::Common)
+    - perl(Term::ReadLine)
+    - perl(LWP)
+    - perl(Storable)
+    - perl(Crypt::Eksblowfish)
+    - perl(Module::Versions::Report)
+    - perl(List::MoreUtils)
+    - perl(Errno)
+    - perl(DBI)
+    - perl(Devel::StackTrace)
+    - perl(Devel::GlobalDestruction)
+    - perl(Time::ParseDate)
+    - perl(IPC::Run3)
+    - perl(Tree::Simple)
+    - perl(HTML::Scrubber)
+    - perl(Sys::Syslog)
+    - perl(HTML::Entities)
+    - perl(LWP::Simple)
+    - perl(File::Glob)
+    - perl(Text::Wrapper)
+    - perl(DateTime)
+    - perl(CGI::Emulate::PSGI)
+    - perl(CGI)
+    - perl(CSS::Squish)
+    - perl(DateTime::Locale)
+    - perl(Apache::Session)
+    - perl(Digest::SHA)
+    - perl(Locale::Maketext::Lexicon)
+    - perl(Module::Refresh)
+    - perl(Digest::base)
+    - perl(File::Temp)
+    - perl(Date::Manip)
+    - perl(Locale::Maketext)
+    - perl(Text::Template)
+    - perl(CGI::Cookie)
+    - perl(Scalar::Util)
+    - perl(XML::RSS)
+    - perl(File::Spec)
+    - perl(Text::WikiFormat)
+    - perl(File::ShareDir)
+    - perl(Regexp::Common)
+
+- name: Install cpan
+  shell: "(echo y;echo o conf prerequisites_policy follow;echo o conf commit) | cpan"
+  args:
+    creates: /root/.cpan
+  
+- name: Install cpanm
+  shell: yes ''|/usr/bin/cpan -i App::cpanminus
+  args:
+    creates: /usr/local/bin/cpanm
+
+- name: Install other dependencies through CPAN
+  cpanm: name={{ item }} 
+  environment:
+    PATH: "{{ lookup('env', 'PATH') }}:/usr/local/bin"
+  with_items:
+    - Plack::Handler::Starlet
+    - Text::Password::Pronounceable
+    - HTML::Quoted
+    - Text::Quoted
+    - Mail::Mailer
+    - Data::GUID
+    - Symbol::Global::Name
+    - DateTime::Format::Natural
+    - Plack
+    - Regexp::Common::net::CIDR
+    - HTML::FormatText::WithLinks::AndTables
+    - Regexp::IPv6
+    - CGI::PSGI
+    - Date::Extract
+    - HTML::Mason::PSGIHandler
+    - Role::Basic
+    - Email::Address::List
+    - Plack::Handler::Starlet
+    - Mozilla::CA
+    - Crypt::X509
+    - Convert::Color
+    - Encode
+    - HTTP::Message
+    - HTML::Mason
+    - Class::Accessor
+    - Log::Dispatch
+    - MIME::Entity
+    - MIME::Types
+    - HTML::RewriteAttributes
+    - DBIx::SearchBuilder
+    - Mail::Header
+    - Locale::Maketext::Fuzzy
+    - File::Which
+    - PerlIO::eol
+    - GnuPG::Interface
+    - Data::ICal
+    - LWP::UserAgent
+    - Net::SSL
+    - LWP::Protocol::https
+    - String::ShellQuote
+    - Net::CIDR
+    - UNIVERSAL::require
+    - FCGI::ProcManager
+    - FCGI
+    - Crypt::SSLeay
+
+# The cpanm module doesn't seem to upgrade perl modules that are installed through yum
+- name: Upgrade Encode
+  shell: /usr/local/bin/cpanm -i Encode
+
+
+- name: Create fcgi group
+  group: name=fcgi state=present system=yes
+
+- name: Create rt group
+  group: name=rt state=present system=yes
+
+- name: Create nginx-data user
+  user: name=nginx-data state=present system=yes createhome=no
+
+- name: Add groups to nginx
+  user: append=yes groups=nginx-data,fcgi name=nginx
+
+- name: Add groups to fcgi
+  user: append=yes groups=nginx-data,rt name=fcgi
+
+- name: Check for rt4 database user
+  shell: mysql -u root -B -e 'select user from mysql.user where user="rt4"'|grep -q rt4
+  ignore_errors: True
+  register: mysql_rt_user
+  
+- name: Create RT database user
+  shell: yes '' | /usr/bin/make initialize-database
+  args:
+    chdir: /tmp/rt-4.2.6
+  when:  mysql_rt_user|failed
+
+- name: Run RT install script
+  command: /usr/bin/make install
+  args:
+    chdir: /tmp/rt-4.2.6
+    creates: /opt/rt4
+
+- name: Create RT virtual host
+  template: src=nginx-rt.conf dest=/etc/nginx/conf.d/rt.conf
+  notify: Restart Nginx
+
+- name: Add RT fcgi socket to Spawn-FCGI
+  lineinfile: dest=/etc/sysconfig/spawn-fcgi regexp="^SOCKET=/var/run/rt-fcgi.sock" line="SOCKET=/var/run/rt-fcgi.sock" state=present
+  notify: Restart Spawn-FCGI
+
+- name: Add RT fcgi options to Spawn-FCGI
+  lineinfile: dest=/etc/sysconfig/spawn-fcgi regexp=".*/opt/rt4/sbin/rt-server\.fcgi.*" line='OPTIONS="-u fcgi -g fcgi -s $SOCKET -S -M 0660 -P /var/run/spawn-fcgi.pid -- /opt/rt4/sbin/rt-server.fcgi"'
+  notify: Restart Spawn-FCGI
+
+- name: Start and enable Spawn-FCGI
+  service: name=spawn-fcgi enabled=yes state=started

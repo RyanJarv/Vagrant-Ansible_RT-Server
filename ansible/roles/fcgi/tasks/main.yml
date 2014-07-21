@@ -1,0 +1,4 @@
+---
+- name: Install spawn-fcgi
+  yum: name=spawn-fcgi state=present
+

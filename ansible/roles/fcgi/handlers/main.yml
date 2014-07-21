@@ -1,0 +1,3 @@
+---
+- name: Restart Spawn-FCGI
+  service: name=spawn-fcgi state=restarted
